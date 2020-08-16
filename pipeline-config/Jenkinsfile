@@ -1,0 +1,76 @@
+pipeline {
+    parameters {
+        string(name: 'TELEGRAM_TOKEN_INSIDE',                    description: 'telegram token',            defaultValue: 'your telegram token value')
+        string(name: 'CHAT_ID',                    description: 'chat id of telegram group',            defaultValue: 'your telegram chat id/group chat id')
+    }
+    agent none
+    options {
+        // Skip default checkout behavior
+        skipDefaultCheckout()
+    }
+    stages {
+        stage('Checkout SCM') {
+            agent { label "master" }
+            steps {
+                checkout scm
+                script {
+                    echo "get COMMIT_ID, COMMIT_MESSAGE and COMMIT_AUTHOR"
+                    sh 'echo -n $(git rev-parse --short HEAD) > ./commit-id'
+                    commitId = readFile('./commit-id')
+                    sh 'echo -n $(git log --format=%B -n 1 \$commitId) > ./commit-message'
+                    commitMessage = readFile('./commit-message')
+                    sh 'echo -n $(git show \$commitId | grep Author) > ./commit-author'
+                    commitAuthor = readFile('./commit-author')
+                }
+                // stash this current workspace
+                stash(name: 'ws', includes:'**,./commit-id,./commit-message,./commit-author')
+            }
+        }
+        stage('Build') {
+            agent { label "master" }
+            steps {
+                sh('chmod +x build.sh')
+                sh('./build.sh')
+            }
+        }
+        stage('Upload') {
+            agent { label "master" }
+            steps {
+                sh('chmod +x script.sh')
+                sh('./script.sh')
+            }
+        }
+        stage('Done') {
+            agent { label "master" }
+            steps {
+                sh('echo "Success Build."')
+                sh('echo "Success Upload."')
+            }
+        }
+    }
+    post {
+        
+        failure{
+            node("master"){
+                script{
+                    textMessage = "Jenkins Mobile Job Failed ${commitId} --- build from release"
+                    sh "curl -s -X POST 'https://api.telegram.org/bot${params.TELEGRAM_TOKEN_INSIDE}/sendMessage?chat_id=${params.CHAT_ID}&text=${textMessage}'"
+                }
+            }
+        }
+        success{
+            node("master"){
+              unstash 'ws'
+                script {
+                    def now = new Date()
+                    url = "https://minio.domain.id/yourbucket/apps-build/${now.format("YYYY-MM-dd", TimeZone.getTimeZone('UTC'))}/app-release.apk"
+                    textMessage = "Jenkins Mobile Job Success ${commitId} --- build from release, Apk url ${url} %0A%0ACommit Message : ${commitMessage}"
+                    sh "curl -s -X POST 'https://api.telegram.org/bot${params.TELEGRAM_TOKEN_INSIDE}/sendMessage?chat_id=${params.CHAT_ID}&text=${textMessage}'"
+                }
+            }
+        }
+        
+        
+    }
+
+}
